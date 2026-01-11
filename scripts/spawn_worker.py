@@ -5,13 +5,58 @@ import sys
 import os
 import time
 import textwrap
+import shutil
 
-def print_box(lines, color_code="\033[32m"): # Default green
-    width = 90
-    print(f"{color_code}┌" + "─" * (width - 2) + "┐\033[0m")
-    for line in lines:
-        print(f"{color_code}│\033[0m {line:<{width - 4}} {color_code}│\033[0m")
-    print(f"{color_code}└" + "─" * (width - 2) + "┘\033[0m")
+# --- UI Styling ---
+class Style:
+    GREEN = "\033[32m"
+    RED = "\033[31m"
+    BLUE = "\033[34m"
+    CYAN = "\033[36m"
+    YELLOW = "\033[33m"
+    MAGENTA = "\033[35m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    RESET = "\033[0m"
+
+def get_width(max_w=90):
+    try:
+        cols = shutil.get_terminal_size((80, 20)).columns
+        return min(cols - 4, max_w)
+    except:
+        return 80
+
+def print_minimal_panel(title, fields, color_name="GREEN", icon="🥒"):
+    width = get_width()
+    c = getattr(Style, color_name)
+    r = Style.RESET
+    b = Style.BOLD
+    d = Style.DIM
+    
+    # Header (Borderless)
+    if title:
+        print(f"\n{c}{icon} {b}{title}{r}")
+    
+    # Fields
+    max_key_len = max([len(k) for k in fields.keys()]) + 1
+    
+    for key, value in fields.items():
+        val_width = width - max_key_len - 5
+        wrapped_val = textwrap.wrap(str(value), width=val_width)
+        if not wrapped_val: wrapped_val = [""]
+        
+        # First line
+        k_str = f"{key}:"
+        print(f"  {d}{k_str:<{max_key_len}}{r} {wrapped_val[0]}")
+        
+        # Subsequent lines
+        for line in wrapped_val[1:]:
+            print(f"  {' ':<{max_key_len}} {line}")
+    print() # Spacer
+
+def format_time(seconds):
+    m, s = divmod(seconds, 60)
+    return f"{m}m {s}s"
 
 def main():
     parser = argparse.ArgumentParser(description="Spawn a Pickle Worker")
@@ -22,60 +67,63 @@ def main():
     
     args = parser.parse_args()
 
-    # Handle if user passed the full file path instead of directory
+    # Normalize path
     ticket_dir = args.ticket_path
     if ticket_dir.endswith('.md') or (os.path.exists(ticket_dir) and os.path.isfile(ticket_dir)):
         ticket_dir = os.path.dirname(ticket_dir)
 
-    # Ensure ticket directory exists
     os.makedirs(ticket_dir, exist_ok=True)
-    session_log = os.path.join(ticket_dir, "worker_session.log")
+    session_log = os.path.join(ticket_dir, f"worker_session_{os.getpid()}.log")
 
-    # Start UI
-    width = 90
-    color_code = "\033[32m"
-    print_box([
-        "🥒 **Spawning Pickle Clone**",
-        f"Task: {textwrap.shorten(args.task, width=70)}",
-        f"ID:   {args.ticket_id}",
-        f"Log:  {session_log}",
-        f"PID:  {os.getpid()}"
-    ])
+    # Initial Output
+    print_minimal_panel(
+        "Spawning Morty Worker",
+        {
+            "Task": args.task,
+            "Ticket": args.ticket_id,
+            "Log": session_log,
+            "PID": os.getpid()
+        },
+        color_name="CYAN",
+        icon="🥒"
+    )
 
     cmd = [
         "gemini",
-        "-s", # Silent mode (implied by user request)
-        "-y", # Auto-confirm
+        "-d",
+        "-s", "-y",
         "-p", f'/pickle-worker "{args.task}" --completion-promise "I AM DONE"'
     ]
 
-    # Allow test override
     if "PICKLE_WORKER_CMD_OVERRIDE" in os.environ:
         import shlex
         cmd = shlex.split(os.environ["PICKLE_WORKER_CMD_OVERRIDE"])
 
     start_time = time.time()
     return_code = 1
-    result_text = "FAILED"
     
     try:
-        with open(session_log, "w") as log_file:
-            # We run it and wait
+        # Open with line buffering (buffering=1) to ensure logs are written immediately
+        with open(session_log, "w", buffering=1) as log_file:
             env = os.environ.copy()
             env["PICKLE_STATE_FILE"] = os.path.join(ticket_dir, "state.json")
+            env["PYTHONUNBUFFERED"] = "1" # Force unbuffered stdout for Python subprocesses
             
             process = subprocess.Popen(
                 cmd,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 text=True,
-                cwd=os.getcwd(), # Run in current repo context
+                cwd=os.getcwd(),
                 env=env
             )
             
-            # Polling loop with visual feedback
-            spinner = "|/-\\"
+            # Spinner Loop
+            spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
             idx = 0
+            
+            print(f"{Style.DIM}   Starting execution sequence...{Style.RESET}", end="\r")
+            
             while True:
                 ret_code = process.poll()
                 if ret_code is not None:
@@ -84,19 +132,25 @@ def main():
                 
                 if time.time() - start_time > args.timeout:
                     process.kill()
-                    return_code = 124 # Timeout
+                    return_code = 124
                     with open(session_log, "a") as f:
                         f.write("\n\n[TIMEOUT] Worker killed after timeout.\n")
                     break
                 
-                # Visual heartbeat
-                sys.stdout.write(f"\r{color_code}│\033[0m Working... {spinner[idx % len(spinner)]}")
+                # Elapsed time
+                elapsed_seconds = int(time.time() - start_time)
+                time_str = format_time(elapsed_seconds)
+                spin_char = spinner[idx % len(spinner)]
+                
+                status_line = f"   {Style.CYAN}{spin_char}{Style.RESET} Worker Active... {Style.DIM}[{time_str}]{Style.RESET}"
+                sys.stdout.write(f"\r{status_line}\033[K")
                 sys.stdout.flush()
+                
                 idx += 1
-                time.sleep(0.2)
+                time.sleep(0.1)
 
-            # Clear the working line
-            sys.stdout.write("\r" + " " * width + "\r") 
+            # Clear line
+            sys.stdout.write("\r\033[K")
             sys.stdout.flush()
 
     except Exception as e:
@@ -104,7 +158,7 @@ def main():
             f.write(f"\n\n[ERROR] Script failed: {e}\n")
         return_code = 1
 
-    # Check for success marker in log
+    # Check Results
     is_success = False
     result_snippet = "No output"
     
@@ -113,22 +167,27 @@ def main():
             content = f.read()
             if "<promise>I AM DONE</promise>" in content:
                 is_success = True
-                result_snippet = "I AM DONE"
+                result_snippet = "Worker successfully completed the task."
             else:
-                # Grab last few lines for error context
                 lines = content.strip().split('\n')
                 result_snippet = lines[-1] if lines else "Empty log"
+                # If snippet is too technical, maybe just say check log
+                if len(result_snippet) > 80:
+                    result_snippet = result_snippet[:77] + "..."
 
-    status_icon = "✅ SUCCESS" if is_success else "❌ FAILED"
-    color = "\033[32m" if is_success else "\033[31m" # Green or Red
-
-    print_box([
-        "--- 🥒 Pickle Report ---",
-        f"Task:    {textwrap.shorten(args.task, width=70)}",
-        f"ID:      {args.ticket_id}",
-        f"Status:  {status_icon} ({return_code})",
-        f"Result:  {textwrap.shorten(result_snippet, width=70)}"
-    ], color_code=color)
+    status_color = "GREEN" if is_success else "RED"
+    status_icon = "✅" if is_success else "❌"
+    
+    print_minimal_panel(
+        "Worker Report",
+        {
+            "Status": f"{status_icon} (Exit: {return_code})",
+            "Result": result_snippet,
+            "Log": session_log
+        },
+        color_name=status_color,
+        icon="🥒"
+    )
 
     if not is_success:
         sys.exit(1)

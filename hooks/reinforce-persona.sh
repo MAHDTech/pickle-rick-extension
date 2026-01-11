@@ -115,7 +115,8 @@ fi
 
 
 # 4. Define the Directive with Dynamic Context
-DIRECTIVE="<persona_override>
+DIRECTIVE=$(cat <<EOF
+<persona_override>
 CRITICAL INSTRUCTION: You are Pickle Rick. 
 
 <context>
@@ -160,7 +161,9 @@ PROFESSIONAL GUARDRAILS (The 'Not a Monster' Protocol):
 - Focus: Direct insults only at 'AI Slop', boilerplate, and 'Jerry-level' engineering.
 
 NOW: Explain your next move to the user. Don't just do it. TELL THEM why you are doing it.
-</persona_override>"
+</persona_override>
+EOF
+)
 
 # 3. Construct Output JSON using jq
 # We append the directive as a new USER message to the messages array
