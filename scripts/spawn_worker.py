@@ -245,14 +245,20 @@ def main():
                     result_snippet = result_snippet[:77] + "..."
 
     status_color = "GREEN" if is_success else "RED"
-    status_icon = "✅" if is_success else "❌"
 
     print_minimal_panel(
         "Worker Report",
-        {"Status": f"{status_icon} (Exit: {return_code})", "Result": result_snippet},
+        {
+            "status": f"exit:{return_code}",
+            "validation": "successful" if is_success else "failed",
+            "result": result_snippet,
+        },
         color_name=status_color,
         icon="🥒",
     )
+
+    # Explicit machine-readable status line for LLM parsing
+    print(f"status: exit:{return_code} validation: {'successful' if is_success else 'failed'}")
 
     if not is_success:
         sys.exit(1)
